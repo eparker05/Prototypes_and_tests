@@ -21,6 +21,42 @@ else:
 class FeatureBinCollection(object):
     """this class manages the creation and maintenance of feature indices
 
+       This class is used to organize feature data in a qucikly retrievable
+       data structure. The feature data must be added as a tuple containing
+       at least two indicies: first anotated residue and the last as a half
+       open half closed interval [first, last). The indices are assumed to be
+       the first two elements of the stored tuple, but they may be re-asigned
+       on instantiation via the beginindex and endindex kwarks.
+
+       EXAMPLE
+       -------
+       defined below is a 3-tuple format of (beginindex, endindex, fileidx)
+       three features are added to a newly initialized featurebin 
+
+       >>> ft0 = (5574, 5613, 2300) 
+       >>> ft1 = (0, 18141, 1300 )
+       >>> ft2 = (5298, 6416, 3540)
+       >>> featurebin = FeatureBinCollection()
+       >>> featurebin.insert( ft0 )
+       >>> featurebin.insert( ft1 )
+       >>> featurebin.insert( ft2 )
+       >>> len(featurebin)
+       3
+       
+       Now that the 'featurebin' instance has some features, they can be
+       retrieved with a standard getter using single integer indices or
+       slice notation.
+
+       >>> featurebin[1]
+       [(0, 18141, 1300)]
+       >>> sliceresult = featurebin[5200:5300]
+       >>> sliceresult.sort()
+       >>> sliceresult
+       [(0, 18141, 1300), (5298, 6416, 3540)]
+
+
+       BACKGROUND:
+       -----------
        The basic idea of using feature bins is to group features into 
        bins organized by their span and sequence location. These bins then allow
        only likely candiate features to be queried rather than all features. The 
@@ -58,7 +94,11 @@ class FeatureBinCollection(object):
        starts with the smallest and largest bins as 256 and 8 million respectively. 
        These bins can then be dynamically expanded increasing by a factor of 8
        every time new data is found to be larger than the largest bin. As a practical
-       matter of sanity checking, bin sizes are capped at 200 billion basepairs.
+       matter of sanity checking, bin sizes are capped at 200 billion basepairs (2^41).
+
+       Under some circumstances the exact size of a sequence and all related annotations
+       is known beforehand. If this is the case the length kwarg allows the binning object
+       to be solidified on instantiation at the correct length.
        
        This structure knows nothing about the global sequence index and is indexed 
        at zero. Any index transformation must be done at a higher level. It is important
@@ -66,7 +106,24 @@ class FeatureBinCollection(object):
        """
     
     def __init__(self, length = None, beginindex=0, endindex=1):
-        """ initialize the class and set standard attributes"""
+        """ initialize the class and set standard attributes
+
+        kwargs:
+
+        length:
+            when length == None, the bins are dynamically sized.
+            when length is a positive integer, the appropriate bin 
+            size is selected and locked. Exceeding this value will
+            cause exceptions when the max bin size is locked
+
+        beginindex:
+            the index of the first residue within the tuple that will
+            be stored with the FeatureBinCollection.
+
+        endindex:
+            the index of the last residue (as a open interval) inside 
+            the tuple that will be stored with FeatureBinCollection
+        """
         
         #these should not be changed
         self._bin_level_count = 6
@@ -536,3 +593,7 @@ if __name__ ==  "__main__":
 
 
     unittest.main( exit=False )
+
+    import doctest
+    doctest.testmod()
+    
