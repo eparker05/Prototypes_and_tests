@@ -17,15 +17,97 @@ if sys.version[0] == '2':
 else:
     integer_types = (int,)
 
+class StupidFeatureBinCollection(object):
+    """this class manages a flat list of features and retrieves them
 
+    Interaction with this class should be the same as FeatureBinCollection
+    but this class lacks the binning strategy that improves performance.
+    
+    no stability checks and base cases are managed, this is unstable
+    and is only useful for performance comparison."""
+    
+    def __init__(self, length = None, beginindex=0, endindex=1):
+        self._bins = []
+        self._beginindex = beginindex 
+        self._endindex = endindex
+        self._is_sorted = False
+        
+    def insert(self, feature_tuple):
+        beginindex = self._beginindex
+        endindex = self._endindex
+
+        begin = feature_tuple[beginindex]
+        end = feature_tuple[endindex]
+        assert isinstance(begin, integer_types)
+        assert isinstance(end, integer_types)
+        assert begin <= end
+        span = end-begin
+        
+        self._is_sorted = False
+        self._bins.append(feature_tuple)
+    
+    def sort(self):
+        self._bins.sort()
+        self._is_sorted = True 
+        
+    def __getitem__(self, key):
+
+        if not self._is_sorted:
+            self.sort()
+        
+        #set some locals
+        beginindex = self._beginindex
+        endindex = self._endindex
+
+        #any integers are just converted to a 'len() == 1' slice
+        if isinstance(key, integer_types):
+            key = slice(key, key+1)
+
+        #check that it is a slice and it has no step property (or step==1)
+        if not isinstance(key, slice):
+            raise TypeError("lookups in the feature bin must use slice or int keys")
+        if key.step is not None and key.step != 1:
+            raise KeyError("lookups in the feature bin may not use slice stepping")
+        
+        #fix begin or end index for slicing of forms: bins[50:] or bins[:50] or even bins[:]
+        if key.stop is None:
+            key = slice(key.start, self._max_sequence_length)
+        if key.start is None:
+            key = slice(0, key.stop)
+        
+        #check that the key is within boundaries:
+        if key.start < 0:
+            raise IndexError("key out of bounds")
+        if key.start > key.stop:
+            raise IndexError("key not valid, slice.start > slice.stop")
+
+        #check for bound and overlapping sequences
+        possible_entries = self._bins
+        return_entries = []
+        for feature in possible_entries:
+            #this covers fully bound sequence and left overlap   ssssssFsFsFsFFFFF
+            if key.start <= feature[beginindex] < key.stop:
+                return_entries.append(feature)
+            #this covers left sequence right sequence overlap of (F)  FFFFFFFsFsFsFsssss
+            elif key.start < feature[endindex] <= key.stop:
+                return_entries.append(feature)
+            #this covers seqyebces fully bound by a feature      FFFFFFFsFsFsFsFsFFFFFFF
+            elif key.start >= feature[beginindex] and key.stop <= feature[endindex]:
+                return_entries.append(feature)
+            #ends the iteration once no more values are possible
+            if key.stop < feature[beginindex]:
+                break
+        return return_entries
+
+        
 class FeatureBinCollection(object):
     """this class manages the creation and maintenance of feature indices
 
-       This class is used to organize feature data in a qucikly retrievable
+       This class is used to organize feature data in a quickly retrievable
        data structure. The feature data must be added as a tuple containing
-       at least two indicies: first anotated residue and the last as a half
+       at least two indices: first annotated residue and the last as a half
        open half closed interval [first, last). The indices are assumed to be
-       the first two elements of the stored tuple, but they may be re-asigned
+       the first two elements of the stored tuple, but they may be re-assigned
        on instantiation via the beginindex and endindex kwarks.
 
        EXAMPLE
@@ -59,7 +141,7 @@ class FeatureBinCollection(object):
        -----------
        The basic idea of using feature bins is to group features into 
        bins organized by their span and sequence location. These bins then allow
-       only likely candiate features to be queried rather than all features. The 
+       only likely candidate features to be queried rather than all features. The 
        example below illustrated with Figure 1 shows a similar scheme where feature1 
        is stored in bin-0, feature2 in bin-4 and feature3 in bin-2. Each sequence is
        stored in the smallest bin that will fully contain the sequence. A query of 
@@ -94,7 +176,7 @@ class FeatureBinCollection(object):
        starts with the smallest and largest bins as 256 and 8 million respectively. 
        These bins can then be dynamically expanded increasing by a factor of 8
        every time new data is found to be larger than the largest bin. As a practical
-       matter of sanity checking, bin sizes are capped at 200 billion basepairs (2^41).
+       matter of sanity checking, bin sizes are capped at 2.2 trillion residues (2^41).
 
        Under some circumstances the exact size of a sequence and all related annotations
        is known beforehand. If this is the case the length kwarg allows the binning object
@@ -135,6 +217,7 @@ class FeatureBinCollection(object):
         self._endindex = endindex
 
         #default action: start small (8M) and allow expansion
+        self._sorted = False
         self._dynamic_size = True
         if length is None:
             self._set_max_bin_power(23)
@@ -204,9 +287,9 @@ class FeatureBinCollection(object):
         self._max_bin_power = power
         self._min_bin_power = self._max_bin_power - 3*(self._bin_level_count-1)
         self._size_list = [2**(self._min_bin_power+3*n) for n in range(self._bin_level_count)]
-        self.maxSeqLength = self._size_list[-1]
+        self._max_sequence_length = self._size_list[-1]
     
-    def insert(self, testTuple):
+    def insert(self, feature_tuple):
         """inserts a tuple with a sequence range into the feature bins
         
         data is assumed to be somewhat scrubbed, coming from a parser
@@ -215,22 +298,39 @@ class FeatureBinCollection(object):
         beginindex = self._beginindex
         endindex = self._endindex
 
+        #reset sorted quality
+        self._sorted = False
 
-        begin = testTuple[beginindex]
-        end = testTuple[endindex]
+        begin = feature_tuple[beginindex]
+        end = feature_tuple[endindex]
         assert isinstance(begin, integer_types)
         assert isinstance(end, integer_types)
-        assert begin < end
+        assert begin <= end
         span = end-begin
         
         bin_index = self._calculate_bin_index(begin, span)
-        self._bins[bin_index].append(testTuple)
+        self._bins[bin_index].append(feature_tuple)
         
     def __len__(self):
-        return sum(len(bin) for bin in self._bins)    
+        return sum(len(bin) for bin in self._bins) 
+
+    def sort(self):
+        """this performs bin-centric sorting, necessary for faster retrieval"""
+        #bins must be sorted by the begin index, this is fastest
+        if self._beginindex == 0:
+            for i in range(len(self._bins)):
+                self._bins[i].sort()
+        #this is a bit slower but accomodates diverse data structures
+        else:
+            for i in range(len(self._bins)):
+                self.bins[i].sort(key = lambda tup: tup[self._beginindex])
+        #reset sorted quality
+        self._sorted = True
+            
 
     def __getitem__(self, key):
 
+        
         #set some locals
         beginindex = self._beginindex
         endindex = self._endindex
@@ -244,14 +344,27 @@ class FeatureBinCollection(object):
             raise TypeError("lookups in the feature bin must use slice or int keys")
         if key.step is not None and key.step != 1:
             raise KeyError("lookups in the feature bin may not use slice stepping")
-
+        
+        #fix begin or end index for slicing of forms: bins[50:] or bins[:50] or even bins[:]
+        if key.stop is None:
+            key = slice(key.start, self._max_sequence_length)
+        if key.start is None:
+            key = slice(0, key.stop)
+        
         #check that the key is within boundaries:
-        if key.start < 0 or key.stop > self._size_list[-1]:
+        if key.start < 0:
             raise IndexError("key out of bounds")
         if key.start > key.stop:
             raise IndexError("key not valid, slice.start > slice.stop")
+        if key.stop >= self._max_sequence_length:
+            key = slice(key.start, self._max_sequence_length-1)
 
+        #pre-sort if necessary
+        if not self._sorted:
+            self.sort()
+            
         #code taken from self._calculate_bin_index(), comments removed
+        return_entries = []
         possible_entries = []
         bin_level_count = self._bin_level_count
         max_bin_power = self._max_bin_power 
@@ -262,24 +375,23 @@ class FeatureBinCollection(object):
             k1 = int(floor(oL + (key.start/sL)))
             #k2 is incremented since range is used
             k2 = int(ceil(oL - 1 + (key.stop)/sL)) + 1
-            for bin in range(k1,k2):
-                possible_entries.extend(self._bins[bin])
-        
-        #check for bound and overlapping sequences
-        return_entries = []
-        for feature in possible_entries:
-            #this covers fully bound sequence and left overlap   ssssssFsFsFsFFFFF
-            if key.start <= feature[beginindex] < key.stop:
-                return_entries.append(feature)
-            #this covers left sequence right sequence overlap of (F)  FFFFFFFsFsFsFsssss
-            elif key.start < feature[endindex] <= key.stop:
-                return_entries.append(feature)
-            #this covers features fully bound by a sequence    ssssssFsFsFsFsFssssss
-            elif key.start <= feature[beginindex] and key.stop >= feature[endindex]:
-                return_entries.append(feature)
-            #this covers seqyebces fully bound by a feature      FFFFFFFsFsFsFsFsFFFFFFF
-            elif key.start >= feature[beginindex] and key.stop <= feature[endindex]:
-                return_entries.append(feature)
+            if k2-k1 > 2:
+                for bin in range(k1+1, k2-1):
+                    return_entries.extend( self._bins[bin]) 
+            for binn in set([k1,k2-1]):
+                #for binn in range(k1,k2):
+                for feature in self._bins[binn]:
+                    #this covers fully bound sequence and left overlap   ssssssFsFsFsFFFFF
+                    if key.start <= feature[beginindex] < key.stop:
+                        return_entries.append(feature)
+                    #this covers left sequence right sequence overlap of (F)  FFFFFFFsFsFsFsssss
+                    elif key.start < feature[endindex] <= key.stop:
+                        return_entries.append(feature)
+                    #this covers seqyebces fully bound by a feature      FFFFFFFsFsFsFsFsFFFFFFF
+                    elif key.start >= feature[beginindex] and key.stop <= feature[endindex]:
+                        return_entries.append(feature)
+                    if key.stop < feature[beginindex]:
+                        break
         return return_entries
 
 
@@ -301,11 +413,15 @@ class FeatureBinCollection(object):
         efficiently using alternate bin index relationships.
         """
         
-        #take care of bad data first
-        assert span > 0   # no function may pass a span <= 0
-        assert begin >= 0  # all indices must be positive
+        #take care base cases with the span parameter
+        assert span >= 0   # no function may pass a span < 0
+        #this is required for zero length determination of bin location
+        span = max(1, span)
+        
+        # all indices must be positive
+        assert begin >= 0  
         if self._dynamic_size:
-            assert begin+span <= 2**41   # len(seq) > 219 billion is not reasonable
+            assert begin+span <= 2**41   # len(seq) > 2.19 trillion is not reasonable
         elif not self._dynamic_size and begin+span > 2**self._max_bin_power:
             error_string = "feature index at {}: must be less than 2^{}".format \
                                                 (begin+span, self._max_bin_power)
@@ -319,6 +435,7 @@ class FeatureBinCollection(object):
                 L = bin_level_count - 1 - l_inverse
                 # calculate offset (oL) of the list at level L
                 oL = (2**(3*L) - 1)/7
+                group_length = (2**(3*(L+1)) - 1)/7
                 #calculate size (sL) of the list: the number of residues in width
                 sL = float(2**(max_bin_power-3*L))
                 # interval[0] >= (k - oL)*sL
@@ -330,7 +447,7 @@ class FeatureBinCollection(object):
                 #k > 1 + oL + (interval[1])/sL
                 #k2 = oL - 1 + (begin+span)/sL  
                 k2 = int(ceil(oL - 1 + (begin+span)/sL))
-                if k1 == k2:
+                if k1 == k2 and k1 < group_length:
                     return k1
             # no suitable bin has been found, expand bins
             # this will not be invoked if the data satisfies
@@ -348,252 +465,317 @@ if __name__ ==  "__main__":
         def setUp(self):
             self.bins = FeatureBinCollection()
             
-        def test_binning_default_level(self):
-            k_0_1 = self.bins._calculate_bin_index(0,1)
+        def test_bin_index_finder_smallest_bin_and_leftmost(self):
             k_0_256 = self.bins._calculate_bin_index(0,256)
-            k_1_256 = self.bins._calculate_bin_index(1,256)
+            self.assertEqual(k_0_256, 4681) #this is the leftmost level 5 bin
+        
+        def test_bin_index_finder_smallest_bin_and_2ndleftmost(self):
             k_256_256 = self.bins._calculate_bin_index(256,256)
-            largeBin = 15000
-            kLarge = self.bins._calculate_bin_index(largeBin*256,256)
+            self.assertEqual(k_256_256, 4682) #this is the leftmost level 5 bin
             
-            self.assertEqual(k_0_1, 4681) #this is the lowest lv5 offset
-            self.assertEqual(k_1_256, 585) #lowest for lv4
-            self.assertEqual(k_0_1, k_0_256)
-            self.assertEqual(k_256_256-1, k_0_256)
-            self.assertEqual(k_256_256-1, k_0_256)
-            self.assertEqual(kLarge, 4681+15000)
-            
-        def test_binning_size_changer(self):
+        def test_bin_index_finder_smallest_bin_and_2ndleftmost_zero_length(self):
+            k_256_0 = self.bins._calculate_bin_index(256,0)
+            self.assertEqual(k_256_0, 4682) 
+        
+        def test_bin_index_finder_smallest_bin_last_index(self):
+            k_1_256 = self.bins._calculate_bin_index(1,256)
+            self.assertEqual(k_1_256, 585) 
+         
+        def test_bin_index_finder_smallest_bin_last_index(self):
+            k_big_256 = self.bins._calculate_bin_index(8388352,256)
+            self.assertEqual(k_big_256, 37448) # this is the rightmost lv5 bin
+        
+        def test_bin_index_finder_largest_bin_and_ensure_no_recalculation(self):
+            k_small_big = self.bins._calculate_bin_index(0, 8388608)
+            self.assertEqual(k_small_big, 0)
+            #value below should not have changed
+            k_big_256 = self.bins._calculate_bin_index(8388352,256)
+            self.assertEqual(k_big_256, 37448)
+          
+        def test_binning_size_changer_once(self):
             #test largest of the default size
             k_full = self.bins._calculate_bin_index(0,8388608)
             self.assertEqual(k_full, 0)
-            self.assertEqual(self.bins.maxSeqLength, 8388608) 
-            self.assertEqual(self.bins._max_bin_power, 23)
             #trigger a size rearrangement 
             k_overFull = self.bins._calculate_bin_index(1,8388608)
-            self.assertEqual(self.bins.maxSeqLength, 8388608*8)
             k_full = self.bins._calculate_bin_index(0,8388608)
+            self.assertEqual(self.bins._max_sequence_length, 8388608*8)
+            self.assertNotIn(256, self.bins._size_list)
+            self.assertIn(2048, self.bins._size_list)
             self.assertEqual(k_overFull, 0)
             self.assertEqual(k_full, 1)
             self.assertEqual(self.bins._max_bin_power, 26)
-            #trigger a size rearrangement twice
+        
+        def test_binning_size_changer_multiple_steps(self):
+            #this sets some inital values up 
+            self.test_binning_size_changer_once()
+            #trigger a size rearrangement the second time
             k_overFull = self.bins._calculate_bin_index(1,8388608*8)
-            self.assertEqual(self.bins.maxSeqLength, 8388608*8*8)
+            self.assertEqual(self.bins._max_sequence_length, 8388608*8*8)
             k_full = self.bins._calculate_bin_index(0,8388608*8)
             self.assertEqual(k_overFull, 0)
             self.assertEqual(k_full, 1)
             self.assertEqual(self.bins._max_bin_power, 29)
+            self.assertNotIn(2048, self.bins._size_list)
+        
+        def test_insertion_bad_negative_val(self):
+            testTuple1 = (-1, 56)
+            self.assertRaises(AssertionError,self.bins.insert,testTuple1)
             
-        def test_insertion_simple(self):
+        def test_insertion_once_smallest(self):
             testTuple1 = (0, 256)
-            testTuple2 = (1, 257)
-            testTuple3 = (256, 256+256)
-            testTuple4 = (4194305, 5194305)
             self.bins.insert(testTuple1)
-            self.bins.insert(testTuple2)
-            self.bins.insert(testTuple3)
-            self.bins.insert(testTuple4)
             self.assertIn(testTuple1, self.bins._bins[4681])
-            self.assertIn(testTuple2, self.bins._bins[585])
-            self.assertIn(testTuple3, self.bins._bins[4682])
-            self.assertIn(testTuple4, self.bins._bins[5])
             
-        def test_insertion_and_rearrangement(self):
-            testTuple1 = (0, 256)
+        def test_insertion_once_smallest_but_overlaps(self):
             testTuple2 = (1, 257)
-            testTuple3 = (256, 256+256)
-            testTuple4 = (4194305, 5194305)
-            testTuple6 = (0, 8388608)
-            testTuple0 = (20000, 50000)
-            self.bins.insert(testTuple1)
             self.bins.insert(testTuple2)
-            self.bins.insert(testTuple3)
-            self.bins.insert(testTuple4)
-            self.bins.insert(testTuple6)
-            self.bins.insert(testTuple0)
-            self.assertIn(testTuple1, self.bins._bins[4681])
             self.assertIn(testTuple2, self.bins._bins[585])
+            
+        def test_insertion_once_smallestbin_rightmost(self):
+            testTuple3 = (8388608-256, 8388608)
+            self.bins.insert(testTuple3)
+            self.assertIn(testTuple3, self.bins._bins[37448])
+
+        def test_insertion_zero_length_smallestbin_rightmost(self):
+            testTuple3 = (8388607, 8388607)
+            self.bins.insert(testTuple3)
+            self.assertIn(testTuple3, self.bins._bins[37448])
+            
+        
+        def test_insertion_once_smallestbin_rightmost_lv4(self):
+            testTuple4 = (8388608-257, 8388608)
+            self.bins.insert(testTuple4)
+            self.assertIn(testTuple4, self.bins._bins[4680])    
+
+        def test_insertion_with_rearrangement(self):
+            testTuple3 = (256, 256+256)
+            self.bins.insert(testTuple3)
             self.assertIn(testTuple3, self.bins._bins[4682])
-            self.assertIn(testTuple4, self.bins._bins[5])
-            self.assertIn(testTuple6, self.bins._bins[0])
-            #trigger a size rearrangement 
+            #trigger a size rearrangement with an insertion
             testTuple5 = (0, 9000000)
             self.bins.insert(testTuple5)
-            testTuple7 = (9000000, 9002500)
-            testTuple8 = (0, 67108864)
-            self.bins.insert(testTuple7)
-            self.bins.insert(testTuple8)
-            # recalculate bin positions (note that _calculate_bin_index is not
-            # used during the rearrangement procedure) this step allows me to check
-            # through two methods that the rearranged bins are still organized
-            a = lambda tt: tt[0]
-            b = lambda tt: tt[1] - tt[0]
-            bin2 = self.bins._calculate_bin_index(a(testTuple2),b(testTuple2))
-            bin3 = self.bins._calculate_bin_index(a(testTuple3),b(testTuple3))
-            bin4 = self.bins._calculate_bin_index(a(testTuple4),b(testTuple4))
-            bin6 = self.bins._calculate_bin_index(a(testTuple6),b(testTuple6))
-            bin1 = self.bins._calculate_bin_index(a(testTuple1),b(testTuple1))
-            bin7 = self.bins._calculate_bin_index(a(testTuple7),b(testTuple7))
-            bin8 = self.bins._calculate_bin_index(a(testTuple8),b(testTuple8))
-            bin5 = self.bins._calculate_bin_index(a(testTuple5),b(testTuple5))
-            bin0 = self.bins._calculate_bin_index(a(testTuple0),b(testTuple0))
-            self.assertIn(testTuple1, self.bins._bins[4681])
-            self.assertIn(testTuple2, self.bins._bins[4681])
             self.assertIn(testTuple3, self.bins._bins[4681])
-            self.assertIn(testTuple4, self.bins._bins[5+8])
             self.assertIn(testTuple5, self.bins._bins[0])
-            self.assertIn(testTuple6, self.bins._bins[1])
-            self.assertIn(testTuple1, self.bins._bins[bin1])
-            self.assertIn(testTuple2, self.bins._bins[bin2])
-            self.assertIn(testTuple3, self.bins._bins[bin3])
-            self.assertIn(testTuple4, self.bins._bins[bin4])
-            self.assertIn(testTuple5, self.bins._bins[bin5])
-            self.assertIn(testTuple6, self.bins._bins[bin6])
-            self.assertIn(testTuple7, self.bins._bins[bin7])
-            self.assertIn(testTuple0, self.bins._bins[bin0])
-            correctedsize_list = [2048, 16384, 131072, 1048576, 8388608, 67108864]
-            self.assertEqual(self.bins._size_list, correctedsize_list)
-            #border case; last small bin
-            testTuple8_1 = (67108863, 67108864)
-            self.bins.insert(testTuple8_1)
-            bin8_1 = self.bins._calculate_bin_index(a(testTuple8_1),b(testTuple8_1))
-            self.assertIn(testTuple8_1, self.bins._bins[bin8_1])
-            #border case; one size up
-            testTuple8_2 = (0, 67108865)
-            self.assertNotIn(67108864*8, self.bins._size_list)
-            self.bins.insert(testTuple8_2)
-            self.assertIn(67108864*8, self.bins._size_list)
-            bin8_1 = self.bins._calculate_bin_index(a(testTuple8_1),b(testTuple8_1))
-            self.assertIn(testTuple8_1, self.bins._bins[bin8_1])
-
-        def test_static_lists(self):
-            #testing the maximum length of
+            self.assertEqual(self.bins._max_sequence_length, 8388608*8)
+            self.assertNotIn(256, self.bins._size_list)
+            self.assertIn(2048, self.bins._size_list)
+            self.assertEqual(self.bins._max_bin_power, 26)
+        
+        def test_insertion_level3_and_level5_then_resize_to_fit_in_same_bin(self):
+            test_tuple_lv3 = (16384 , 16384+16384)
+            test_tuple_lv5 = (16384+16384-256 , 16384+16384)
+            self.bins.insert(test_tuple_lv3)
+            self.bins.insert(test_tuple_lv5)
+            self.assertIn(test_tuple_lv3, self.bins._bins[74])
+            self.assertIn(test_tuple_lv5, self.bins._bins[4681+127])
+            #trigger rearrangement by 2 levels
+            k_overFull = self.bins._calculate_bin_index(1,8388608*8)
+            self.assertIn(test_tuple_lv3, self.bins._bins[4682])
+            self.assertIn(test_tuple_lv5, self.bins._bins[4682])
+            self.assertEqual(self.bins._max_bin_power, 29)
+            
+            
+        def test_overflows_of_static_defined_lists(self):
             staticbins = FeatureBinCollection(length=67108864)
-            a = lambda tt: tt[0]
-            b = lambda tt: tt[1] - tt[0]
-            testTuple0 = (0, 2048)
+            #insert a chunk of data
             testTuple1 = (1, 2049)
-            testTuple2 = (20000, 50000)
-            testTuple3 = (67108864-3, 67108864)
-            testTuple4 = (4194305, 5194305)
-            testTuple5 = (0, 8388608)
-            testTuple6 = (0, 67108864)
-            staticbins.insert(testTuple0)
             staticbins.insert(testTuple1)
-            staticbins.insert(testTuple2)
-            staticbins.insert(testTuple3)
-            staticbins.insert(testTuple4)
-            staticbins.insert(testTuple5)
-            staticbins.insert(testTuple6)
-            bin0 = staticbins._calculate_bin_index(a(testTuple0),b(testTuple0))
-            bin1 = staticbins._calculate_bin_index(a(testTuple1),b(testTuple1))
-            bin2 = staticbins._calculate_bin_index(a(testTuple2),b(testTuple2))
-            bin3 = staticbins._calculate_bin_index(a(testTuple3),b(testTuple3))
-            bin4 = staticbins._calculate_bin_index(a(testTuple4),b(testTuple4))
-            bin5 = staticbins._calculate_bin_index(a(testTuple5),b(testTuple5))
-            bin6 = staticbins._calculate_bin_index(a(testTuple6),b(testTuple6))
-            self.assertIn(testTuple0, staticbins._bins[4681])
-            self.assertIn(testTuple0, staticbins._bins[bin0])
             self.assertIn(testTuple1, staticbins._bins[585])
-            self.assertIn(testTuple1, staticbins._bins[bin1])
-            self.assertIn(testTuple2, staticbins._bins[bin2])
-            self.assertIn(testTuple3, staticbins._bins[bin3])
-            self.assertIn(testTuple4, staticbins._bins[bin4])
-            self.assertIn(testTuple5, staticbins._bins[bin5])
-            self.assertIn(testTuple6, staticbins._bins[bin6])
             #test that exceptions are raised if a over-sized bin is used
             overSizedTuple1 = (0, 67108865)
             overSizedTuple2 = (67108864, 67108865)
-            reallyReallyoversizedEnd = 1+2**41
             self.assertRaises(ValueError, staticbins.insert, overSizedTuple1)
             self.assertRaises(ValueError, staticbins.insert, overSizedTuple2)
+            
+        def test_oversized_definition_of_the_collection(self):    
+            reallyReallyoversizedEnd = 1+2**41
             self.assertRaises(ValueError, FeatureBinCollection, reallyReallyoversizedEnd)
 
-        def test_getter_base_cases(self):
-            testTuple0 = (0, 2048)
-            testTuple1 = (1, 2049)
-            testTuple2 = (0, 2**41)
-            self.bins.insert(testTuple0)
-            self.bins.insert(testTuple1)
+        def test_getter_get_values_from_empty_set(self):
+            resultsEmpty = self.bins[2**20]
+            self.assertEqual([], resultsEmpty)
+            
+        def test_getter_get_values_edge_cases(self):
+            resultsEdgeRight = self.bins[-1+2**23]
+            resultsEdgeLeft = self.bins[0]
+            self.assertEqual([], resultsEdgeRight)
+            self.assertEqual([], resultsEdgeLeft)
+            
+        def test_getter_get_values_from_out_of_bounds(self):
+            self.assertRaises(IndexError, self.bins.__getitem__, -1)
+            self.assertRaises(IndexError, self.bins.__getitem__, 1+2**23)
+            
+        def test_getter_typeError_string(self):
             self.assertRaises(TypeError, self.bins.__getitem__, "hello")
-            self.assertRaises(TypeError, self.bins.__getitem__, 5.45)
+            
+        def test_getter_typeError_float(self):
+            self.assertRaises(TypeError, self.bins.__getitem__, 5.45)          
+            
+        def test_getter_typeError_stepped_slice(self):
             self.assertRaises(KeyError, self.bins.__getitem__, slice(0,25,2))
-            self.assertRaises(IndexError, self.bins.__getitem__, 2**27)
-            self.assertRaises(IndexError, self.bins.__getitem__, slice(55,25))
-            #Resize the array to test large numbers
-            #  this is required to check that long type integers (python2) do not interfere
-            #  with the getter routine, also that py3 is not failing when testing integers
-            self.bins.insert(testTuple2)
-            resultsForTuple2 = self.bins[2**40]
-            self.assertIn(testTuple2, resultsForTuple2)
+            
+        def test_getter_half_slices(self):
+            emptyL = self.bins[:50]
+            emptyR = self.bins[50:]
+            emptyM = self.bins[:]
+            self.assertEqual([], emptyL)
+            self.assertEqual([], emptyR)
+            self.assertEqual([], emptyM)
 
+        def test_getter_half_slices_with_result_right_border(self):
+            resultR = (20000,30000)
+            self.bins.insert(resultR)
+            emptyL = self.bins[:20000]
+            emptyR = self.bins[20000:]
+            emptyM = self.bins[:]
+            self.assertEqual([], emptyL)
+            self.assertIn(resultR, emptyR)
+            self.assertIn(resultR, emptyM)
+        
+        def test_getter_half_slices_with_result_left_border(self):
+            resultL = (10000,20000)
+            self.bins.insert(resultL)
+            emptyL = self.bins[:20000]
+            emptyR = self.bins[20000:]
+            emptyM = self.bins[:]
+            self.assertEqual([], emptyR)
+            self.assertIn(resultL, emptyL)
+            self.assertIn(resultL, emptyM)
+            
+        def test_insertion_where_medium_sized_bin_is_out_of_bounds(self):
+            resultL = (8388608, 8388608+2047)
+            self.bins.insert(resultL)
+            self.assertIn(resultL, self.bins[838840:8388610])
+            self.assertEqual(self.bins._max_bin_power, 26)
 
-        def test_getter_functionality(self):
-            testTuple0 = (0, 2048)
-            testTuple1 = (1, 2049)
-            testTuple2 = (20000, 50000)
-            testTuple3 = (0, 8388608)
-            testTuple4 = (0, 67108864)
-            self.bins.insert(testTuple0)
-            self.bins.insert(testTuple1)
-            self.bins.insert(testTuple2)
+        def test_getter_overlap_left(self):
+            feature = (100000,200000)
+            self.bins.insert(feature)
+            result = self.bins[99000:101000]
+            self.assertIn(feature, result)
+        
+        def test_getter_overlap_right(self):
+            feature = (100000,200000)
+            self.bins.insert(feature)
+            result = self.bins[199000:201000]
+            self.assertIn(feature, result)
+
+        def test_getter_feature_inside_region(self):
+            feature = (100000,200000)
+            self.bins.insert(feature)
+            result = self.bins[99000:201000]
+            self.assertIn(feature, result) 
+            
+        def test_getter_region_inside_feature(self):
+            feature = (100000,200000)
+            self.bins.insert(feature)
+            result = self.bins[101000:199000]
+            self.assertIn(feature, result) 
+        
+        def test_getter_zero_length_inside(self):
+            testTuple3 = (8388605, 8388605)
             self.bins.insert(testTuple3)
-            #   test length=1 retrievals 
-            #int key
-            self.assertNotIn(testTuple0, self.bins[2049])
-            self.assertNotIn(testTuple0, self.bins[2048])
-            self.assertNotIn(testTuple1, self.bins[0])
-            self.assertNotIn(testTuple2, self.bins[50000])
-            self.assertNotIn(testTuple2, self.bins[19999])
-            #slice key
-            self.assertNotIn(testTuple0, self.bins[2049:2050])
-            self.assertNotIn(testTuple0, self.bins[2048:2049])
-            self.assertNotIn(testTuple1, self.bins[0:1])
-            self.assertNotIn(testTuple2, self.bins[50000:50001])
-            self.assertNotIn(testTuple2, self.bins[19999:20000])
-            #fully contained
-            self.assertIn(testTuple3, self.bins[1000:1500])
-            self.assertNotIn(testTuple2, self.bins[1000:1500])
-            self.assertIn(testTuple1, self.bins[1000:1500])
-            #feature overlap of sequence right side
-            self.assertIn(testTuple2, self.bins[19000:21000])
-            self.assertIn(testTuple2, self.bins[19000:20001])
-            self.assertNotIn(testTuple2, self.bins[19000:20000])
-            #feature overlap of sequence left side
-            self.assertIn(testTuple2, self.bins[29000:55000])
-            self.assertIn(testTuple2, self.bins[49999:55000])
-            self.assertNotIn(testTuple2, self.bins[50000:55000])
-            #
-            # trigger a dynamic expansion event and re-run tests
-            #
-            self.bins.insert(testTuple4)
-            self.assertNotIn(testTuple0, self.bins[2049])
-            self.assertNotIn(testTuple0, self.bins[2048])
-            self.assertNotIn(testTuple1, self.bins[0])
-            self.assertNotIn(testTuple2, self.bins[50000])
-            self.assertNotIn(testTuple2, self.bins[19999])
-            #slice key
-            self.assertNotIn(testTuple0, self.bins[2049:2050])
-            self.assertNotIn(testTuple0, self.bins[2048:2049])
-            self.assertNotIn(testTuple1, self.bins[0:1])
-            self.assertNotIn(testTuple2, self.bins[50000:50001])
-            self.assertNotIn(testTuple2, self.bins[19999:20000])
-            #fully contained
-            self.assertIn(testTuple3, self.bins[1000:1500])
-            self.assertNotIn(testTuple2, self.bins[1000:1500])
-            self.assertIn(testTuple1, self.bins[1000:1500])
-            #feature overlap of sequence right side
-            self.assertIn(testTuple2, self.bins[19000:21000])
-            self.assertIn(testTuple2, self.bins[19000:20001])
-            self.assertNotIn(testTuple2, self.bins[19000:20000])
-            #feature overlap of sequence left side
-            self.assertIn(testTuple2, self.bins[29000:55000])
-            self.assertIn(testTuple2, self.bins[49999:55000])
-            self.assertNotIn(testTuple2, self.bins[50000:55000])
-
-
+            self.assertIn(testTuple3,self.bins[8388604:8388606])
+            self.assertIn(testTuple3,self.bins[8388604:8388605])
+            self.assertIn(testTuple3,self.bins[8388605:8388606])
+            self.assertEqual([],self.bins[8388603:8388604])
+            
     unittest.main( exit=False )
 
+    print("now running doctests")
+    
     import doctest
-    doctest.testmod()
+    if doctest.testmod():
+        print("DOCTESTS: work")
+    
+    #
+    #
+    # the following was hacked togeather to be used for basic performance testing
+    # 
+    #
+    #
+    sbins = StupidFeatureBinCollection()
+    bins = FeatureBinCollection()
+    
+    import random
+    import time
+    
+    #measuring insertion time
+    numberToInsert = 500000
+    count = numberToInsert
+    tinitialize = time.clock()
+    sbins_insertion_time = 0
+    bins_insertion_time = 0
+    size = 8*67108864
+    while count > 0:
+        count -= 1
+        #models a distribution where 60% are small features (one or several AAs)
+        # 20% are medium features
+        # 20% are large features
+        if count > 0.8*numberToInsert:
+            num1 = random.randint(0,size)
+            num2 = random.randint(0,size)
+        elif count > 0.6*numberToInsert:
+            num1 = random.randint(0,size/16)
+            num2 = random.randint(0,size/16)
+            randomAddition = random.randint(0,15*size/16)
+            num1 += randomAddition
+            num2 += randomAddition
+        else:
+            num1 = random.randint(0,size/128)
+            num2 = random.randint(0,size/128)
+            randomAddition = random.randint(0,127*size/128)
+            num1 += randomAddition
+            num2 += randomAddition
+        idx1 = min(num1, num2)
+        idx2 = max(num1, num2)
+        newFeature = (idx1, idx2,)
+        sbin0 = time.clock()
+        sbins.insert(newFeature)
+        sbins_insertion_time += time.clock()- sbin0
+        bin0 = time.clock()
+        bins.insert(newFeature)
+        bins_insertion_time += time.clock()- bin0
+    #the sbins sort is actually a part of the insertion process since 
+    #data retrieval requires this to be sorted
+    bin0 = time.clock()
+    sbins.sort()    
+    sbins_insertion_time += time.clock()- bin0
+    bin0 = time.clock()
+    bins.sort()    
+    bins_insertion_time += time.clock()- bin0
+    print("insertiontime bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
+    
+    #measuring retrieval time
+    number_to_retrieve = 100
+    count = number_to_retrieve
+    tinitialize = time.clock()
+    sbins_insertion_time = 0
+    bins_insertion_time = 0
+    while count > 0:
+        count -= 1
+        if count > 0.5* number_to_retrieve:
+            num1 = random.randint(0,size)
+            num2 = random.randint(0,size)
+        else:
+            num1 = random.randint(0,size/128)
+            num2 = random.randint(0,size/128)
+            randomAddition = random.randint(0,127*size/128)
+            num1 += randomAddition
+            num2 += randomAddition
+        idx1 = min(num1, num2)
+        idx2 = max(num1, num2)
+        sbin0 = time.clock()
+        sbinsResult = sbins[idx1:idx2]
+        sbins_insertion_time += time.clock()- sbin0
+        bin0 = time.clock()
+        binsResult = bins[idx1:idx2]
+        bins_insertion_time += time.clock()- bin0
+        binsResult.sort()
+        sbinsResult.sort()
+        assert binsResult == sbinsResult
+        
+    sbins.sort()    
+    print("retrieval time: bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
     
