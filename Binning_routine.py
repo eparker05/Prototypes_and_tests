@@ -303,6 +303,7 @@ class FeatureBinCollection(object):
 
         begin = feature_tuple[beginindex]
         end = feature_tuple[endindex]
+        #use _py3k module later
         assert isinstance(begin, integer_types)
         assert isinstance(end, integer_types)
         assert begin <= end
@@ -336,14 +337,17 @@ class FeatureBinCollection(object):
         endindex = self._endindex
 
         #any integers are just converted to a 'len() == 1' slice
-        if isinstance(key, integer_types):
-            key = slice(key, key+1)
+        
 
         #check that it is a slice and it has no step property (or step==1)
         if not isinstance(key, slice):
-            raise TypeError("lookups in the feature bin must use slice or int keys")
+            if isinstance(key, integer_types):
+                key = slice(key, key+1)
+            else:
+                raise TypeError("lookups in the feature bin must use slice or int keys")
+        
         if key.step is not None and key.step != 1:
-            raise KeyError("lookups in the feature bin may not use slice stepping")
+            raise KeyError("lookups in the feature bin may not use slice stepping ex. bins[0:50:2]")
         
         #fix begin or end index for slicing of forms: bins[50:] or bins[:50] or even bins[:]
         if key.stop is None:
@@ -414,45 +418,48 @@ class FeatureBinCollection(object):
         """
         
         #take care base cases with the span parameter
-        assert span >= 0   # no function may pass a span < 0
+        #assert span >= 0   # no function may pass a span < 0
         #this is required for zero length determination of bin location
         span = max(1, span)
         
         # all indices must be positive
         assert begin >= 0  
-        if self._dynamic_size:
-            assert begin+span <= 2**41   # len(seq) > 2.19 trillion is not reasonable
-        elif not self._dynamic_size and begin+span > 2**self._max_bin_power:
-            error_string = "feature index at {}: must be less than 2^{}".format \
+        
+        # fix bin sizes if needed. Also, if the bin size is
+        # larger than expected, do some self-consistency checks
+        while begin+span > self._max_sequence_length:
+            if self._dynamic_size:
+                assert begin+span <= 2**41   # len(seq) > 2.19 trillion is not reasonable
+            elif not self._dynamic_size and begin+span > 2**self._max_bin_power:
+                error_string = "feature index at {}: must be less than 2^{}".format \
                                                 (begin+span, self._max_bin_power)
-            raise ValueError(error_string)
-
-        #run the assignment loop
-        while True:
-            bin_level_count = self._bin_level_count
-            max_bin_power = self._max_bin_power 
-            for l_inverse in range(bin_level_count):
-                L = bin_level_count - 1 - l_inverse
-                # calculate offset (oL) of the list at level L
-                oL = (2**(3*L) - 1)/7
-                group_length = (2**(3*(L+1)) - 1)/7
-                #calculate size (sL) of the list: the number of residues in width
-                sL = float(2**(max_bin_power-3*L))
-                # interval[0] >= (k - oL)*sL
-                # rearrange to form
-                # k =< oL + (interval[0])/sL
-                k1 = int(floor(oL + (begin/sL)))
-                # interval[1] < (k - oL + 1)*sL
-                # rearrange to form
-                #k > 1 + oL + (interval[1])/sL
-                #k2 = oL - 1 + (begin+span)/sL  
-                k2 = int(ceil(oL - 1 + (begin+span)/sL))
-                if k1 == k2 and k1 < group_length:
-                    return k1
-            # no suitable bin has been found, expand bins
-            # this will not be invoked if the data satisfies
-            # criteria checked prior to the while loop
+                raise ValueError(error_string)
             self._increase_bin_sizes()
+            
+        #run the assignment loop
+        bin_level_count = self._bin_level_count
+        max_bin_power = self._max_bin_power 
+        for l_inverse in range(bin_level_count):
+            L = bin_level_count - 1 - l_inverse
+            # calculate offset (oL) of the list at level L
+            oL = (2**(3*L) - 1)/7
+            group_length = (2**(3*(L+1)) - 1)/7
+            #calculate size (sL) of the list: the number of residues in width
+            sL = float(2**(max_bin_power-3*L))
+            # interval[0] >= (k - oL)*sL
+            # rearrange to form
+            # k =< oL + (interval[0])/sL
+            k1 = int(floor(oL + (begin/sL)))
+            # interval[1] < (k - oL + 1)*sL
+            # rearrange to form
+            #k > 1 + oL + (interval[1])/sL
+            #k2 = oL - 1 + (begin+span)/sL  
+            k2 = int(ceil(oL - 1 + (begin+span)/sL))
+            if k1 == k2 and k1 < group_length:
+                return k1
+        
+        assert False # the assignment loop failed
+            
 
 
            
@@ -614,6 +621,11 @@ if __name__ ==  "__main__":
             
         def test_getter_typeError_stepped_slice(self):
             self.assertRaises(KeyError, self.bins.__getitem__, slice(0,25,2))
+        
+        def test_getter_reversed_index(self):
+            resultR = (20000,30000)
+            self.bins.insert(resultR)
+            self.assertRaises(IndexError, self.bins.__getitem__, slice(23000,21000))
             
         def test_getter_half_slices(self):
             emptyL = self.bins[:50]
@@ -700,82 +712,146 @@ if __name__ ==  "__main__":
     
     import random
     import time
+    import cProfile
     
-    #measuring insertion time
-    numberToInsert = 500000
-    count = numberToInsert
-    tinitialize = time.clock()
-    sbins_insertion_time = 0
-    bins_insertion_time = 0
-    size = 8*67108864
-    while count > 0:
-        count -= 1
-        #models a distribution where 60% are small features (one or several AAs)
-        # 20% are medium features
-        # 20% are large features
-        if count > 0.8*numberToInsert:
-            num1 = random.randint(0,size)
-            num2 = random.randint(0,size)
-        elif count > 0.6*numberToInsert:
-            num1 = random.randint(0,size/16)
-            num2 = random.randint(0,size/16)
-            randomAddition = random.randint(0,15*size/16)
-            num1 += randomAddition
-            num2 += randomAddition
-        else:
-            num1 = random.randint(0,size/128)
-            num2 = random.randint(0,size/128)
-            randomAddition = random.randint(0,127*size/128)
-            num1 += randomAddition
-            num2 += randomAddition
-        idx1 = min(num1, num2)
-        idx2 = max(num1, num2)
-        newFeature = (idx1, idx2,)
-        sbin0 = time.clock()
-        sbins.insert(newFeature)
-        sbins_insertion_time += time.clock()- sbin0
-        bin0 = time.clock()
-        bins.insert(newFeature)
-        bins_insertion_time += time.clock()- bin0
-    #the sbins sort is actually a part of the insertion process since 
-    #data retrieval requires this to be sorted
-    bin0 = time.clock()
-    sbins.sort()    
-    sbins_insertion_time += time.clock()- bin0
-    bin0 = time.clock()
-    bins.sort()    
-    bins_insertion_time += time.clock()- bin0
-    print("insertiontime bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
-    
-    #measuring retrieval time
-    number_to_retrieve = 100
-    count = number_to_retrieve
-    tinitialize = time.clock()
-    sbins_insertion_time = 0
-    bins_insertion_time = 0
-    while count > 0:
-        count -= 1
-        if count > 0.5* number_to_retrieve:
-            num1 = random.randint(0,size)
-            num2 = random.randint(0,size)
-        else:
-            num1 = random.randint(0,size/128)
-            num2 = random.randint(0,size/128)
-            randomAddition = random.randint(0,127*size/128)
-            num1 += randomAddition
-            num2 += randomAddition
-        idx1 = min(num1, num2)
-        idx2 = max(num1, num2)
-        sbin0 = time.clock()
-        sbinsResult = sbins[idx1:idx2]
-        sbins_insertion_time += time.clock()- sbin0
-        bin0 = time.clock()
-        binsResult = bins[idx1:idx2]
-        bins_insertion_time += time.clock()- bin0
-        binsResult.sort()
-        sbinsResult.sort()
-        assert binsResult == sbinsResult
+    def make_bin_types(numberToInsert = 500000 ,makesbins=True, makebins=True, printstats = False):
+        pr = cProfile.Profile()
+        #measuring insertion time
+        count = numberToInsert
+        tinitialize = time.clock()
+        sbins_insertion_time = 0
+        bins_insertion_time = 0
+        size = 8*67108864
+        while count > 0:
+            count -= 1
+            #models a distribution where 60% are small features (one or several AAs)
+            # 20% are medium features
+            # 20% are large features
+            if count > 0.8*numberToInsert:
+                num1 = random.randint(0,size)
+                num2 = random.randint(0,size)
+            elif count > 0.6*numberToInsert:
+                num1 = random.randint(0,size/16)
+                num2 = random.randint(0,size/16)
+                randomAddition = random.randint(0,15*size/16)
+                num1 += randomAddition
+                num2 += randomAddition
+            else:
+                num1 = random.randint(0,size/128)
+                num2 = random.randint(0,size/128)
+                randomAddition = random.randint(0,127*size/128)
+                num1 += randomAddition
+                num2 += randomAddition
+            idx1 = min(num1, num2)
+            idx2 = max(num1, num2)
+            newFeature = (idx1, idx2,)
+            if makesbins:
+                sbin0 = time.clock()
+                sbins.insert(newFeature)
+                sbins_insertion_time += time.clock()- sbin0
+            if makebins:
+                bin0 = time.clock()
+                pr.enable()
+                bins.insert(newFeature)
+                pr.disable()
+                bins_insertion_time += time.clock()- bin0
+        #the sbins sort is actually a part of the insertion process since 
+        #data retrieval requires this to be sorted
+        if makesbins:
+            bin0 = time.clock()
+            sbins.sort()    
+            sbins_insertion_time += time.clock()- bin0
+        if makebins:
+            bin0 = time.clock()
+            bins.sort()    
+            bins_insertion_time += time.clock()- bin0
+        print("insertiontime bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
         
-    sbins.sort()    
-    print("retrieval time: bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
+        if printstats:
+            pr.print_stats()
+        if makebins and makesbins:
+            return sbins, bins
+        elif makebins:
+            return bins
+        else:
+            return sbins
+        
+    def read_from_bins_types(sbins=None, bins=None, number_to_retrieve = 100, pullsbins = False, pullbins=False, printstats=False):    
+        pr = cProfile.Profile()
+        #measuring retrieval time
+        count = number_to_retrieve
+        tinitialize = time.clock()
+        sbins_insertion_time = 0
+        bins_insertion_time = 0
+        size = 8*67108864
+        while count > 0:
+            count -= 1
+            if count > 0.5* number_to_retrieve:
+                num1 = random.randint(0,size)
+                num2 = random.randint(0,size)
+            else:
+                num1 = random.randint(0,size/128)
+                num2 = random.randint(0,size/128)
+                randomAddition = random.randint(0,127*size/128)
+                num1 += randomAddition
+                num2 += randomAddition
+            idx1 = min(num1, num2)
+            idx2 = max(num1, num2)
+            if pullsbins:
+                sbin0 = time.clock()
+                sbinsResult = sbins[idx1:idx2]
+                sbins_insertion_time += time.clock()- sbin0
+            if pullbins:
+                bin0 = time.clock()
+                pr.enable()
+                binsResult = bins[idx1:idx2]
+                pr.disable()
+                bins_insertion_time += time.clock()- bin0
+            if pullbins and pullsbins:
+                binsResult.sort()
+                sbinsResult.sort()
+                assert binsResult == sbinsResult
+        if printstats:
+            pr.print_stats()
+        print("retrieval time: bins {}, stupidbins {}".format(bins_insertion_time,sbins_insertion_time))
+        if printstats:
+            pr.print_stats()
     
+    sbins, bins = make_bin_types(numberToInsert = 50000 ,makesbins=True, makebins=True)
+    read_from_bins_types(sbins, bins, number_to_retrieve = 100, pullsbins = True, pullbins=True)  
+
+    insertbins = "make_bin_types(numberToInsert = 50000 ,makesbins=False, makebins=True)"
+    
+    
+    def calculate_bin_index_ntimes(bins, n=20000):
+        pr = cProfile.Profile()
+        numbers_to_calculate = n
+        size = 8*67108864
+        while n > 0:
+            n -= 1
+            if n > 0.8*numbers_to_calculate:
+                num1 = random.randint(0,size)
+                num2 = random.randint(0,size)
+            elif n > 0.6*numbers_to_calculate:
+                num1 = random.randint(0,size/16)
+                num2 = random.randint(0,size/16)
+                randomAddition = random.randint(0,15*size/16)
+                num1 += randomAddition
+                num2 += randomAddition
+            else:
+                num1 = random.randint(0,size/128)
+                num2 = random.randint(0,size/128)
+                randomAddition = random.randint(0,127*size/128)
+                num1 += randomAddition
+                num2 += randomAddition
+            idx1 = min(num1, num2)
+            idx2 = max(num1, num2)
+            idx2 = idx2 - idx1 + 1
+            pr.enable()
+            bins._calculate_bin_index(idx1, idx2)
+            pr.disable()
+        pr.print_stats()
+    
+    #bins = FeatureBinCollection()    
+    #calculate_bin_index_ntimes(bins, n=20000)
+    #bins = make_bin_types(numberToInsert = 50000 ,makesbins=False, makebins=True, printstats=True)
