@@ -385,14 +385,15 @@ class FeatureBinCollection(object):
             for binn in set([k1,k2-1]):
                 #for binn in range(k1,k2):
                 for feature in self._bins[binn]:
-                    #this covers fully bound sequence and left overlap   ssssssFsFsFsFFFFF
+                    #this covers fully bound sequence and left overlap
                     if key.start <= feature[beginindex] < key.stop:
                         return_entries.append(feature)
-                    #this covers left sequence right sequence overlap of (F)  FFFFFFFsFsFsFsssss
+                    #this covers left sequence right sequence overlap 
                     elif key.start < feature[endindex] <= key.stop:
                         return_entries.append(feature)
-                    #this covers seqyebces fully bound by a feature      FFFFFFFsFsFsFsFsFFFFFFF
-                    elif key.start >= feature[beginindex] and key.stop <= feature[endindex]:
+                    #this covers seqyebces fully bound by a feature      
+                    elif key.start > feature[beginindex] and\
+                         key.stop < feature[endindex]:
                         return_entries.append(feature)
                     if key.stop < feature[beginindex]:
                         break
@@ -418,12 +419,12 @@ class FeatureBinCollection(object):
         """
         
         #take care base cases with the span parameter
-        #assert span >= 0   # no function may pass a span < 0
-        #this is required for zero length determination of bin location
+        assert span >= 0
+        #this is required for determination of bin location for zero length seq's
         span = max(1, span)
         
         # all indices must be positive
-        assert begin >= 0  
+ 
         
         # fix bin sizes if needed. Also, if the bin size is
         # larger than expected, do some self-consistency checks
@@ -471,14 +472,33 @@ if __name__ ==  "__main__":
     class TestFeatureBinCollection(unittest.TestCase):
         def setUp(self):
             self.bins = FeatureBinCollection()
-            
+        
+        def test_initial_state_max_bin_power(self):
+            self.assertEqual(self.bins._max_bin_power, 23)
+
+        def test_initial_state_max_count_of_bins(self):
+            self.assertEqual(len(self.bins._bins), 37449)
+
         def test_bin_index_finder_smallest_bin_and_leftmost(self):
             k_0_256 = self.bins._calculate_bin_index(0,256)
             self.assertEqual(k_0_256, 4681) #this is the leftmost level 5 bin
         
+        def test_bin_index_finder_negative_span(self):
+            #k_0_256 = self.bins._calculate_bin_index(0,-56)
+            #self.assertEqual(k_0_256, 4681) #this is the leftmost level 5 bin
+            self.assertRaises(AssertionError, self.bins._calculate_bin_index, \
+                              0, -1*56)
+
+        def test_bin_index_finder_negative_start(self):
+            #k_0_256 = self.bins._calculate_bin_index(-20,56)
+            self.assertRaises(AssertionError, self.bins._calculate_bin_index, \
+                              -20, 56)
+            #self.assertEqual(k_0_256, 4681) #this is the leftmost level 5 bin
+
         def test_bin_index_finder_smallest_bin_and_2ndleftmost(self):
             k_256_256 = self.bins._calculate_bin_index(256,256)
-            self.assertEqual(k_256_256, 4682) #this is the leftmost level 5 bin
+            #this is the second leftmost level 5 bin
+            self.assertEqual(k_256_256, 4682) 
             
         def test_bin_index_finder_smallest_bin_and_2ndleftmost_zero_length(self):
             k_256_0 = self.bins._calculate_bin_index(256,0)
@@ -495,15 +515,17 @@ if __name__ ==  "__main__":
         def test_bin_index_finder_largest_bin_and_ensure_no_recalculation(self):
             k_small_big = self.bins._calculate_bin_index(0, 8388608)
             self.assertEqual(k_small_big, 0)
+            self.assertEqual(self.bins._max_bin_power, 23)
             #value below should not have changed
+            
+        def test_bin_index_finder_smallest_bin_largest_index(self):
+            """ this should return the index of the last bin"""
             k_big_256 = self.bins._calculate_bin_index(8388352,256)
             self.assertEqual(k_big_256, 37448)
+            self.assertEqual(self.bins._max_bin_power, 23)
           
         def test_binning_size_changer_once(self):
-            #test largest of the default size
-            k_full = self.bins._calculate_bin_index(0,8388608)
-            self.assertEqual(k_full, 0)
-            #trigger a size rearrangement 
+            """ test that the bin size chnges when list is 1-over"""            
             k_overFull = self.bins._calculate_bin_index(1,8388608)
             k_full = self.bins._calculate_bin_index(0,8388608)
             self.assertEqual(self.bins._max_sequence_length, 8388608*8)
@@ -514,9 +536,7 @@ if __name__ ==  "__main__":
             self.assertEqual(self.bins._max_bin_power, 26)
         
         def test_binning_size_changer_multiple_steps(self):
-            #this sets some inital values up 
-            self.test_binning_size_changer_once()
-            #trigger a size rearrangement the second time
+            """trigger a size rearrangement twice"""
             k_overFull = self.bins._calculate_bin_index(1,8388608*8)
             self.assertEqual(self.bins._max_sequence_length, 8388608*8*8)
             k_full = self.bins._calculate_bin_index(0,8388608*8)
@@ -701,6 +721,7 @@ if __name__ ==  "__main__":
     if doctest.testmod():
         print("DOCTESTS: work")
     
+    
     #
     #
     # the following was hacked togeather to be used for basic performance testing
@@ -727,19 +748,20 @@ if __name__ ==  "__main__":
             #models a distribution where 60% are small features (one or several AAs)
             # 20% are medium features
             # 20% are large features
-            if count > 0.8*numberToInsert:
+            if count > 0.9*numberToInsert:
                 num1 = random.randint(0,size)
                 num2 = random.randint(0,size)
-            elif count > 0.6*numberToInsert:
+            elif count > 0.8*numberToInsert:
                 num1 = random.randint(0,size/16)
                 num2 = random.randint(0,size/16)
                 randomAddition = random.randint(0,15*size/16)
                 num1 += randomAddition
                 num2 += randomAddition
             else:
-                num1 = random.randint(0,size/128)
-                num2 = random.randint(0,size/128)
-                randomAddition = random.randint(0,127*size/128)
+                divider = 1000000#8000#128
+                num1 = random.randint(0,size/divider)
+                num2 = random.randint(0,size/divider)
+                randomAddition = random.randint(0,127*size/divider)
                 num1 += randomAddition
                 num2 += randomAddition
             idx1 = min(num1, num2)
@@ -817,7 +839,7 @@ if __name__ ==  "__main__":
         if printstats:
             pr.print_stats()
     
-    sbins, bins = make_bin_types(numberToInsert = 50000 ,makesbins=True, makebins=True)
+    sbins, bins = make_bin_types(numberToInsert = 500000 ,makesbins=True, makebins=True)
     read_from_bins_types(sbins, bins, number_to_retrieve = 100, pullsbins = True, pullbins=True)  
 
     insertbins = "make_bin_types(numberToInsert = 50000 ,makesbins=False, makebins=True)"
