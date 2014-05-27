@@ -14,8 +14,15 @@ import sys
 #that accomodates integers larger than 2**31
 if sys.version[0] == '2':
     integer_types = (int, long)
+    def _is_int_or_long(i):
+        """Check if the value is an integer or long."""
+        return isinstance(i, (int, long))
 else:
     integer_types = (int,)
+    def _is_int_or_long(i):
+        """Check if the value is an integer in Python 3.
+        """
+        return isinstance(i, int)
 
 class StupidFeatureBinCollection(object):
     """this class manages a flat list of features and retrieves them
@@ -38,8 +45,8 @@ class StupidFeatureBinCollection(object):
 
         begin = feature_tuple[beginindex]
         end = feature_tuple[endindex]
-        assert isinstance(begin, integer_types)
-        assert isinstance(end, integer_types)
+        assert _is_int_or_long(begin)
+        assert _is_int_or_long(end)
         assert begin <= end
         span = end-begin
         
@@ -60,7 +67,7 @@ class StupidFeatureBinCollection(object):
         endindex = self._endindex
 
         #any integers are just converted to a 'len() == 1' slice
-        if isinstance(key, integer_types):
+        if _is_int_or_long(key):
             key = slice(key, key+1)
 
         #check that it is a slice and it has no step property (or step==1)
@@ -192,21 +199,20 @@ class FeatureBinCollection(object):
 
         kwargs:
 
-        length:
+          length:
             when length == None, the bins are dynamically sized.
             when length is a positive integer, the appropriate bin 
             size is selected and locked. Exceeding this value will
             cause exceptions when the max bin size is locked
 
-        beginindex:
+          beginindex:
             the index of the first residue within the tuple that will
             be stored with the FeatureBinCollection.
 
-        endindex:
+          endindex:
             the index of the last residue (as a open interval) inside 
             the tuple that will be stored with FeatureBinCollection
-        """
-        
+        """ 
         #these should not be changed
         self._bin_level_count = 6
         self._bins = [[] for i in range(37449)]
@@ -224,7 +230,7 @@ class FeatureBinCollection(object):
             
         #alternate action if a sequence length is provided
         # set to smallest power able to fully contain
-        elif isinstance(length, integer_types) and length > 0:
+        elif _is_int_or_long(length) and length > 0:
             default_powers = [23,26,29,32,35,38,41]
             for power in default_powers:
                 if length <= 2**power:
@@ -234,8 +240,6 @@ class FeatureBinCollection(object):
             if self._dynamic_size: #this should have been set to False
                 error_string = "Sequence length is {}: must be less than 2^41".format(length)
                 raise ValueError(error_string)
-
-
         
     def _increase_bin_sizes(self):
         """increase max bin size 8x (2**3) and re-organize existing binned data
@@ -246,8 +250,7 @@ class FeatureBinCollection(object):
         
         An assertion in this routine blocks sequences larger than 2**41 from
         being created.
-        """
-        
+        """  
         oldsizepower = self._max_bin_power
         newsizepower = oldsizepower + 3
         assert newsizepower <= 41
@@ -279,8 +282,7 @@ class FeatureBinCollection(object):
             new_index = k - oL + new_oL 
             self._bins[new_index] = self._bins[k]
             self._bins[k] = []
-            
-        
+               
     def _set_max_bin_power(self, power):
         """sets the maximum bin power and fixes other necessary attributes"""
         
@@ -304,8 +306,8 @@ class FeatureBinCollection(object):
         begin = feature_tuple[beginindex]
         end = feature_tuple[endindex]
         #use _py3k module later
-        assert isinstance(begin, integer_types)
-        assert isinstance(end, integer_types)
+        assert _is_int_or_long(begin)
+        assert _is_int_or_long(end)
         assert begin <= end
         span = end-begin
         
@@ -328,41 +330,34 @@ class FeatureBinCollection(object):
         #reset sorted quality
         self._sorted = True
             
-
     def __getitem__(self, key):
-
+        """This getter efficiently retrieves the required entries
         
+        This getter primarily works as expected and in a pythonic
+        fashion, one exception it it's treatment of slices indices
+        where the start is greater than the stop. Rather than just 
+        throwing calculated output, an IndexError is raised.
+        """    
         #set some locals
         beginindex = self._beginindex
         endindex = self._endindex
-
-        #any integers are just converted to a 'len() == 1' slice
         
-
         #check that it is a slice and it has no step property (or step==1)
         if not isinstance(key, slice):
-            if isinstance(key, integer_types):
+            if _is_int_or_long(key):
                 key = slice(key, key+1)
             else:
                 raise TypeError("lookups in the feature bin must use slice or int keys")
         
+        #any integers are just converted to a 'len() == 1' slice
         if key.step is not None and key.step != 1:
             raise KeyError("lookups in the feature bin may not use slice stepping ex. bins[0:50:2]")
         
         #fix begin or end index for slicing of forms: bins[50:] or bins[:50] or even bins[:]
-        if key.stop is None:
-            key = slice(key.start, self._max_sequence_length)
-        if key.start is None:
-            key = slice(0, key.stop)
-        
-        #check that the key is within boundaries:
-        if key.start < 0:
-            raise IndexError("key out of bounds")
-        if key.start > key.stop:
+        keystart, keystop, keystep = key.indices(self._max_sequence_length)
+        if keystart > keystop:
             raise IndexError("key not valid, slice.start > slice.stop")
-        if key.stop >= self._max_sequence_length:
-            key = slice(key.start, self._max_sequence_length-1)
-
+        
         #pre-sort if necessary
         if not self._sorted:
             self.sort()
@@ -376,9 +371,9 @@ class FeatureBinCollection(object):
             L = bin_level_count - 1 - l_inverse
             oL = (2**(3*L) - 1)/7
             sL = float(2**(max_bin_power-3*L))
-            k1 = int(floor(oL + (key.start/sL)))
+            k1 = int(floor(oL + (keystart/sL)))
             #k2 is incremented since range is used
-            k2 = int(ceil(oL - 1 + (key.stop)/sL)) + 1
+            k2 = int(ceil(oL - 1 + (keystop)/sL)) + 1
             if k2-k1 > 2:
                 for bin in range(k1+1, k2-1):
                     return_entries.extend( self._bins[bin]) 
@@ -386,19 +381,18 @@ class FeatureBinCollection(object):
                 #for binn in range(k1,k2):
                 for feature in self._bins[binn]:
                     #this covers fully bound sequence and left overlap
-                    if key.start <= feature[beginindex] < key.stop:
+                    if keystart <= feature[beginindex] < keystop:
                         return_entries.append(feature)
                     #this covers left sequence right sequence overlap 
-                    elif key.start < feature[endindex] <= key.stop:
+                    elif keystart < feature[endindex] <= keystop:
                         return_entries.append(feature)
                     #this covers seqyebces fully bound by a feature      
-                    elif key.start > feature[beginindex] and\
-                         key.stop < feature[endindex]:
+                    elif keystart > feature[beginindex] and\
+                         keystop < feature[endindex]:
                         return_entries.append(feature)
-                    if key.stop < feature[beginindex]:
+                    if keystop < feature[beginindex]:
                         break
         return return_entries
-
 
     def _calculate_bin_index(self, begin,span):
         """ This function returns a bin index given a (begin, span) interval
@@ -423,9 +417,6 @@ class FeatureBinCollection(object):
         #this is required for determination of bin location for zero length seq's
         span = max(1, span)
         
-        # all indices must be positive
- 
-        
         # fix bin sizes if needed. Also, if the bin size is
         # larger than expected, do some self-consistency checks
         while begin+span > self._max_sequence_length:
@@ -441,21 +432,21 @@ class FeatureBinCollection(object):
         bin_level_count = self._bin_level_count
         max_bin_power = self._max_bin_power 
         for l_inverse in range(bin_level_count):
-            L = bin_level_count - 1 - l_inverse
+            level = bin_level_count - 1 - l_inverse
             # calculate offset (oL) of the list at level L
-            oL = (2**(3*L) - 1)/7
-            group_length = (2**(3*(L+1)) - 1)/7
+            offset_at_L = (2**(3*level) - 1)/7
+            group_length = (2**(3*(level+1)) - 1)/7
             #calculate size (sL) of the list: the number of residues in width
-            sL = float(2**(max_bin_power-3*L))
+            size_at_L = float(2**(max_bin_power-3*level))
             # interval[0] >= (k - oL)*sL
             # rearrange to form
             # k =< oL + (interval[0])/sL
-            k1 = int(floor(oL + (begin/sL)))
+            k1 = int(floor(offset_at_L + (begin/size_at_L)))
             # interval[1] < (k - oL + 1)*sL
             # rearrange to form
             #k > 1 + oL + (interval[1])/sL
             #k2 = oL - 1 + (begin+span)/sL  
-            k2 = int(ceil(oL - 1 + (begin+span)/sL))
+            k2 = int(ceil(offset_at_L - 1 + (begin+span)/size_at_L))
             if k1 == k2 and k1 < group_length:
                 return k1
         
