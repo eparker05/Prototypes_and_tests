@@ -61,7 +61,7 @@ class ExpatHandler(object):
         self._parser_class = parser_class
         
         self.targetfield = "PLANT"
-        self.namestoparse = ["PLANT", "NAMES", "N",] 
+        self.namestoparse = ["PLANT", "NAMES", "N", "ZONE", "PRICE"] 
     
     def parse_from_position(self, position=0):
         handle = self._handle
@@ -91,11 +91,14 @@ class ExpatHandler(object):
             self._finish_element()
             
         if name in self.namestoparse:
+            self.savetext = True
             byteindex = self._parser.CurrentByteIndex + self.baseposition
             newelement = Element(name, begin=byteindex)
             newelement.attributes = attrs
             self.currentelem.add_child(newelement)
             self.currentelem = newelement
+        else:
+            self.savetext = False
         
     def end_element(self, name):
         if name == self.targetfield:
@@ -111,7 +114,7 @@ class ExpatHandler(object):
             self.currentelem.indexend = True        
 
     def char_data(self, data):
-        if data.strip():
+        if data.strip() and self.savetext:
             self.currentelem.text += data.strip()
             
     def _finish_element(self):
