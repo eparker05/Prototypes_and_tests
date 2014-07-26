@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<CATALOG xmlns="http://peptidomics.evanaparker.com">
+  <PLANT>
+    <NAMES>
+      <N type="common">Bloodroot</N>
+      <N type="botanical">Sanguinaria canadensis</N>
+    </NAMES>
+    <ZONE value="4" />
+    <LIGHT>Mostly Shady</LIGHT>
+    <PRICE>$2.44</PRICE>
+    <AVAILABILITY>031599</AVAILABILITY>
+    <FAKE>none</FAKE>
+  </PLANT>
+<PLANT>
+    <NAMES>
+      <N type="common" n="1">Columbine</N>
+      <N type="common" n="2">Western Columbine</N>
+      <N type="botanical">Aquilegia canadensis</N>
+    </NAMES>
+    <ZONE value="3" />
+    <LIGHT>Mostly Shady</LIGHT>
+    <PRICE>$9.37</PRICE>
+    <AVAILABILITY>030699</AVAILABILITY>
+  </PLANT>
+</CATALOG>
