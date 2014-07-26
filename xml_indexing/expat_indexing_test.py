@@ -84,7 +84,10 @@ class ExpatHandler(object):
             parser.ParseFile(handle)
         except StopIteration:
             return rootelem
-
+        
+        #A return should have happened at this point
+        raise ValueError("Check that file contains target element")
+        
     def start_element(self, name, attrs):
         print("{}new name {}".format("-"*(self.currentelem.depth()+1), name))
         if self.currentelem.indexend is True:
